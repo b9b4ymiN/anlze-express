@@ -1,12 +1,4 @@
-"use strict";
-const express = require("express");
-const path = require("path");
-const serverless = require("serverless-http");
-const app = express();
-const bodyParser = require("body-parser");
-const yahoo2 = require("../yahoo2");
-const firebase = require("firebase/app");
-const cors = require("cors");
+const { default: yahooFinance } = require("yahoo-finance2");
 const mathData = {
   mathPriceKey: {
     USD2THB: "THB%3DX",
@@ -10094,82 +10086,110 @@ const mathData = {
   ],
 };
 
-//Setting FireBase
-const firebaseConfig = {
-  apiKey: "AIzaSyByNpKtYQHHHpNtylYURYVrwUB-fFayYvY",
-  authDomain: "bstock-8d4cd.firebaseapp.com",
-  databaseURL: "https://bstock-8d4cd-default-rtdb.firebaseio.com",
-  projectId: "bstock-8d4cd",
-  storageBucket: "bstock-8d4cd.appspot.com",
-  messagingSenderId: "50475280652",
-  appId: "1:50475280652:web:77401341af190464e10129",
+async function getStockDetial(symbol, modules) {
+  const result = await yahooFinance.quoteSummary(symbol, modules);
+  return result;
+}
+
+async function getCash(symbol) {
+  await yahooFinance
+    .quoteSummary(symbol, {
+      modules: ["defaultKeyStatistics", "balanceSheetHistory"],
+    })
+    .then(async (data) => {
+      const { sharesOutstanding } = data.defaultKeyStatistics;
+      const { cash } = data.balanceSheetHistory.balanceSheetStatements[3];
+      const result = {
+        symbol: symbol,
+        sharesOutstanding: sharesOutstanding,
+        cash: cash,
+        cash2shares: (cash / sharesOutstanding).toFixed(3),
+      };
+      console.log("getCash : ", result);
+      return result;
+    })
+    .catch((err) => {
+      return { symbol: symbol, error: "fail loading data" };
+    });
+}
+
+async function getPriceFixDate(symbol, date) {
+  var dateStr = new Date(date);
+  let queryOptions = { period1: date, period2: formatDate(dateStr.addDays(1)) };
+  console.log("q : ", queryOptions);
+  const result = yahooFinance.historical(symbol, queryOptions);
+  return result;
+}
+
+Date.prototype.addDays = function (days) {
+  var date = new Date(this.valueOf());
+  date.setDate(date.getDate() + days);
+  return date;
 };
 
-firebase.initializeApp(firebaseConfig);
+function formatDate(date) {
+  var d = new Date(date),
+    month = "" + (d.getMonth() + 1),
+    day = "" + d.getDate(),
+    year = d.getFullYear();
 
-//Setting cors on server
-const whitelist = [
-  "https://anlze.vercel.app",
-  "https://anlze-b9b4ymin.vercel.app",
-  "https://anlze-git-main-b9b4ymin.vercel.app",
-  "https://bfinance.vercel.app",
-  "https://bfinance-b9b4ymin.vercel.app",
-  "https://bfinance-git-main-b9b4ymin.vercel.app",
-  "https://bfinance-qs54ndpfs-b9b4ymin.vercel.app",
-  "http://localhost:3000",
-  "http://localhost:3000/",
-  "http://192.168.1.104:3000",
-];
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin || whitelist.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
+  if (month.length < 2) month = "0" + month;
+  if (day.length < 2) day = "0" + day;
+
+  return [year, month, day].join("-");
+}
+
+async function getLastPrice(symbol) {
+  var dateStr = new Date();
+  let queryOptions = {
+    period1: formatDate(dateStr.addDays(-1)),
+    period2: formatDate(dateStr.addDays(2)),
+  };
+  console.log("getLastPrice : ", queryOptions, " | symbol : ", symbol);
+  const result = yahooFinance.historical(symbol, queryOptions);
+  return result;
+}
+
+async function getListIndex() {
+  const quote = await yahooFinance.quote([
+    mathData.mathPriceKey["dowJone"],
+    mathData.mathPriceKey["stoxx"],
+    mathData.mathPriceKey["dax"],
+    mathData.mathPriceKey["shanghai"],
+    mathData.mathPriceKey["nikkei"],
+    mathData.mathPriceKey["krx"],
+    mathData.mathPriceKey["hsi"],
+    mathData.mathPriceKey["SETIndex"],
+  ]);
+  const rawData = [];
+  quote.forEach((data) => {
+    console.log("getListIndex : ", data);
+    const {
+      shortName,
+      regularMarketChangePercent,
+      regularMarketPrice,
+      regularMarketPreviousClose,
+      regularMarketChange,
+      currency,
+    } = data;
+    rawData.push({
+      shortName: shortName,
+      regularMarketChangePercent: regularMarketChangePercent,
+      regularMarketPrice: regularMarketPrice,
+      regularMarketPreviousClose: regularMarketPreviousClose,
+      regularMarketChange: regularMarketChange,
+      currency: currency,
+    });
+  });
+  return rawData;
+}
+module.exports = {
+  getStockDetial: getStockDetial,
+  getPriceFixDate: getPriceFixDate,
+  getLastPrice: getLastPrice,
+  getListIndex: getListIndex,
+  getCash: getCash,
+  module: {
+    rules: [{ test: /\.txt$/, use: "raw-loader" }],
   },
-  credentials: true,
 };
-app.use(cors(corsOptions));
-
-const router = express.Router();
-router.get("/", (req, res) => {
-  res.writeHead(200, { "Content-Type": "text/html" });
-  res.write("<h1>Hello from Express.js!</h1>");
-  res.end();
-});
-
-router.get("/another", (req, res) => res.json({ route: req.originalUrl }));
-router.post("/", (req, res) => res.json({ postBody: req.body }));
-router.get("/testV1", (req, res) => res.json({ value: "test1" }));
-router.get("/api/stockQuoteV2", (req, res) => {
-  try {
-    const stock = req.query.stock.toUpperCase() + ".BK";
-    yahoo2
-      .getStockDetial(stock, {
-        modules: [
-          "earnings",
-          "defaultKeyStatistics",
-          "price",
-          "incomeStatementHistoryQuarterly",
-          "balanceSheetHistoryQuarterly",
-          "cashflowStatementHistoryQuarterly",
-        ],
-      })
-      .then((data) => {
-        res.json(data);
-      })
-      .catch((c) => {
-        res.json({ catch: c });
-      });
-  } catch (ex) {
-    res.json({ stockQuote_catch: ex });
-  }
-});
-
-app.use(bodyParser.json());
-app.use("/.netlify/functions/server", router); // path must route to lambda
-app.use("/", (req, res) => res.sendFile(path.join(__dirname, "../index.html")));
-
-module.exports = app;
-module.exports.handler = serverless(app);
